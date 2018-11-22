@@ -1,10 +1,8 @@
 package org.daanvdn;
 
 import com.google.common.base.Charsets;
-import com.google.common.base.Stopwatch;
 import com.google.common.base.Throwables;
 import com.google.common.io.Files;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.reflect.FieldUtils;
 import org.deeplearning4j.datasets.iterator.AsyncDataSetIterator;
@@ -55,7 +53,7 @@ public class ParallelTrainer {
     private Integer prefetchBuffer;
     @Option(name = "-report", required = false)
     private Boolean reportScore = true;
-    @Option(name = "-mode", required = false, handler = TrainingModeOptionHandler.class)
+//    @Option(name = "-mode", required = false, handler = TrainingModeOptionHandler.class)
     private ParallelWrapper.TrainingMode trainingMode = ParallelWrapper.TrainingMode.AVERAGING;
 
 
