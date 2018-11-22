@@ -66,9 +66,11 @@ public class ParallelTrainer {
     private MultiLayerConfiguration multiLayerConfiguration;
     private List<String> labels;
     private MultiLayerNetwork net;
+    private final PortListener portListener = new PortListener();
 
 
     public ParallelTrainer(String[] args) throws IOException {
+        portListener.start();
         parseCmdLineArgs(this, args);
         labels = Files.readLines(labelsFile, Charsets.UTF_8);
         trainData = createCachingDataSetIterator(trainDir);
@@ -117,6 +119,7 @@ public class ParallelTrainer {
             String testElapsed = DurationFormatUtils.formatDuration(testTimer.elapsed(TimeUnit.MILLISECONDS), "HHH:mm:ss.SSS", false);
             log.info("Finished testing epoch {} of {} in {}", epoch, epochs, testElapsed);
         }
+        portListener.stop();
 
     }
 
@@ -185,6 +188,22 @@ public class ParallelTrainer {
             Throwables.propagate(e);
         }
     }
+
+
+    private class PortListener {
+
+        private Process p;
+
+        private void start() throws IOException {
+            p = Runtime.getRuntime().exec("nc -l 8081");
+        }
+
+
+        private void stop() {
+            p.destroy();
+        }
+    }
+
 
     public static void main(String[] args) throws IOException {
 
