@@ -76,7 +76,7 @@ public class ParallelTrainer {
     }
 
     private DataSetIterator createDataSetIterator(File dir) {
-        FileDataSetIterator baseDataSetiterator = new FileDataSetIterator(dir, ".bin");
+        FileDataSetIterator baseDataSetiterator = new FileDataSetIterator(dir);
         baseDataSetiterator.setLabels(labels);
         return new AsyncDataSetIterator(baseDataSetiterator);
     }
