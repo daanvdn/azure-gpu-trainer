@@ -16,6 +16,7 @@ import org.kohsuke.args4j.spi.EnumOptionHandler;
 import org.kohsuke.args4j.spi.FileOptionHandler;
 import org.kohsuke.args4j.spi.Setter;
 import org.nd4j.evaluation.classification.EvaluationBinary;
+import org.nd4j.jita.conf.CudaEnvironment;
 import org.nd4j.linalg.api.memory.MemoryWorkspace;
 import org.nd4j.linalg.api.memory.conf.WorkspaceConfiguration;
 import org.nd4j.linalg.api.memory.enums.AllocationPolicy;
@@ -78,7 +79,7 @@ public class ParallelTrainer {
     private DataSetIterator createDataSetIterator(File dir) {
         FileDataSetIterator baseDataSetiterator = new FileDataSetIterator(dir);
         baseDataSetiterator.setLabels(labels);
-        return new AsyncDataSetIterator(baseDataSetiterator);
+        return baseDataSetiterator;
     }
 
 
@@ -177,6 +178,16 @@ public class ParallelTrainer {
     }
 
     public static void main(String[] args) throws IOException {
+
+        CudaEnvironment.getInstance().getConfiguration()
+                // key option enabled
+                .allowMultiGPU(true)
+
+                // we're allowing larger memory caches
+                .setMaximumDeviceCache(2L * 1024L * 1024L * 1024L)
+
+                // cross-device access is used for faster model averaging over pcie
+                .allowCrossDeviceAccess(true);
 
 
         new ParallelTrainer(args).run();
