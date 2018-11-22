@@ -1,11 +1,12 @@
 package org.daanvdn;
 
 import com.google.common.base.Charsets;
+import com.google.common.base.Stopwatch;
 import com.google.common.base.Throwables;
 import com.google.common.io.Files;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.reflect.FieldUtils;
-import org.deeplearning4j.datasets.iterator.AsyncDataSetIterator;
+import org.apache.commons.lang3.time.DurationFormatUtils;
 import org.deeplearning4j.datasets.iterator.file.FileDataSetIterator;
 import org.deeplearning4j.nn.conf.MultiLayerConfiguration;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
@@ -17,11 +18,9 @@ import org.kohsuke.args4j.spi.FileOptionHandler;
 import org.kohsuke.args4j.spi.Setter;
 import org.nd4j.evaluation.classification.EvaluationBinary;
 import org.nd4j.jita.conf.CudaEnvironment;
-import org.nd4j.linalg.api.memory.MemoryWorkspace;
-import org.nd4j.linalg.api.memory.conf.WorkspaceConfiguration;
-import org.nd4j.linalg.api.memory.enums.AllocationPolicy;
-import org.nd4j.linalg.api.memory.enums.LearningPolicy;
+import org.nd4j.linalg.dataset.api.iterator.CachingDataSetIterator;
 import org.nd4j.linalg.dataset.api.iterator.DataSetIterator;
+import org.nd4j.linalg.dataset.api.iterator.cache.InFileAndMemoryDataSetCache;
 import org.nd4j.linalg.factory.Nd4j;
 
 import java.io.ByteArrayOutputStream;
@@ -31,6 +30,7 @@ import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -50,11 +50,14 @@ public class ParallelTrainer {
     private Integer workers;
     @Option(name = "-avg", required = true)
     private Integer averagingFrequency;
-    @Option(name = "-prefetch", required = true)
-    private Integer prefetchBuffer;
+    @Option(name = "-prefetch", required = false)
+    private Integer prefetchBuffer = 16 * Nd4j.getAffinityManager().getNumberOfDevices();
     @Option(name = "-report", required = false)
     private Boolean reportScore = true;
-//    @Option(name = "-mode", required = false, handler = TrainingModeOptionHandler.class)
+
+    @Option(name = "-cacheDir", required = true, handler = FileOptionHandler.class)
+    private File cacheDir;
+    //    @Option(name = "-mode", required = false, handler = TrainingModeOptionHandler.class)
     private ParallelWrapper.TrainingMode trainingMode = ParallelWrapper.TrainingMode.AVERAGING;
 
 
@@ -68,45 +71,51 @@ public class ParallelTrainer {
     public ParallelTrainer(String[] args) throws IOException {
         parseCmdLineArgs(this, args);
         labels = Files.readLines(labelsFile, Charsets.UTF_8);
-        trainData = createDataSetIterator(trainDir);
-        testData = createDataSetIterator(testDir);
+        trainData = createCachingDataSetIterator(trainDir);
+        testData = createCachingDataSetIterator(testDir);
         multiLayerConfiguration = MultiLayerConfiguration.fromJson(Files.toString(neuralNetConf, Charsets.UTF_8));
         net = new MultiLayerNetwork(multiLayerConfiguration);
         net.init();
         net.setListeners(new ScoreIterationListener());
     }
 
-    private DataSetIterator createDataSetIterator(File dir) {
+    private DataSetIterator createFileDataSetIterator(File dir) {
         FileDataSetIterator baseDataSetiterator = new FileDataSetIterator(dir);
         baseDataSetiterator.setLabels(labels);
         return baseDataSetiterator;
     }
 
 
+    private DataSetIterator createCachingDataSetIterator(File dir) {
+        FileDataSetIterator dataSetIterator = new FileDataSetIterator(dir);
+        return new CachingDataSetIterator(dataSetIterator, new InFileAndMemoryDataSetCache(cacheDir));
+    }
+
+
     public void run() {
 
-        WorkspaceConfiguration workspaceConfig = WorkspaceConfiguration.builder()
+      /*  WorkspaceConfiguration workspaceConfig = WorkspaceConfiguration.builder()
                 .policyAllocation(AllocationPolicy.STRICT)
                 .policyLearning(LearningPolicy.OVER_TIME) // <-- this option makes workspace learning after first loop
-                .build();
+                .build();*/
         ParallelWrapper parallelWrapper = getParallelWrapper();
 
         for (int epoch = 0; epoch < epochs; epoch++) {
-            try (MemoryWorkspace ws = Nd4j.getWorkspaceManager().getAndActivateWorkspace(workspaceConfig,
-                    "mem_ws_ID")) {
-                log.info("Started training epoch {} of {}", epoch, epochs);
-                parallelWrapper.fit(trainData);
-                trainData.reset();
-                log.info("Finished training epoch {} of {}", epoch, epochs);
-                log.info("Started testing epoch {} of {}", epoch, epochs);
-                EvaluationBinary evaluationBinary = net.doEvaluation(testData, new EvaluationBinary())[0];
-                String stats = evaluationBinary.stats();
-                log.info("\n{}", stats);
-                testData.reset();
-                log.info("Finished testing epoch {} of {}", epoch, epochs);
 
-
-            }
+            Stopwatch trainTimer = Stopwatch.createStarted();
+            log.info("Started training epoch {} of {}", epoch, epochs);
+            parallelWrapper.fit(trainData);
+            String trainElapsed = DurationFormatUtils.formatDuration(trainTimer.elapsed(TimeUnit.MILLISECONDS), "HHH:mm:ss.SSS", false);
+            trainData.reset();
+            log.info("Finished training epoch {} of {} in {}", epoch, epochs, trainElapsed);
+            log.info("Started testing epoch {} of {}", epoch, epochs);
+            Stopwatch testTimer = Stopwatch.createStarted();
+            EvaluationBinary evaluationBinary = net.doEvaluation(testData, new EvaluationBinary())[0];
+            String stats = evaluationBinary.stats();
+            log.info("\n{}", stats);
+            testData.reset();
+            String testElapsed = DurationFormatUtils.formatDuration(testTimer.elapsed(TimeUnit.MILLISECONDS), "HHH:mm:ss.SSS", false);
+            log.info("Finished testing epoch {} of {} in {}", epoch, epochs, testElapsed);
         }
 
     }
@@ -179,6 +188,7 @@ public class ParallelTrainer {
 
     public static void main(String[] args) throws IOException {
 
+//        Nd4j.setDataType(DataBuffer.Type.HALF);
         CudaEnvironment.getInstance().getConfiguration()
                 // key option enabled
                 .allowMultiGPU(true)
