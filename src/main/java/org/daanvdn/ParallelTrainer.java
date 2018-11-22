@@ -14,13 +14,13 @@ import org.deeplearning4j.optimize.listeners.ScoreIterationListener;
 import org.deeplearning4j.parallelism.ParallelWrapper;
 import org.kohsuke.args4j.*;
 import org.kohsuke.args4j.spi.EnumOptionHandler;
+import org.kohsuke.args4j.spi.ExplicitBooleanOptionHandler;
 import org.kohsuke.args4j.spi.FileOptionHandler;
 import org.kohsuke.args4j.spi.Setter;
-import org.nd4j.evaluation.classification.EvaluationBinary;
 import org.nd4j.jita.conf.CudaEnvironment;
 import org.nd4j.linalg.dataset.api.iterator.CachingDataSetIterator;
 import org.nd4j.linalg.dataset.api.iterator.DataSetIterator;
-import org.nd4j.linalg.dataset.api.iterator.cache.InFileAndMemoryDataSetCache;
+import org.nd4j.linalg.dataset.api.iterator.cache.InMemoryDataSetCache;
 import org.nd4j.linalg.factory.Nd4j;
 
 import java.io.ByteArrayOutputStream;
@@ -36,6 +36,7 @@ import java.util.stream.Collectors;
 @Slf4j
 public class ParallelTrainer {
 
+    private static final long AVALIABLE_DEVICE_MEMORY = 17179869184L;
     @Option(name = "-epochs", required = true)
     private Integer epochs;
     @Option(name = "-train", required = true, handler = FileOptionHandler.class)
@@ -52,8 +53,16 @@ public class ParallelTrainer {
     private Integer averagingFrequency;
     @Option(name = "-prefetch", required = false)
     private Integer prefetchBuffer = 16 * Nd4j.getAffinityManager().getNumberOfDevices();
-    @Option(name = "-report", required = false)
+    @Option(name = "-report", required = false, handler = ExplicitBooleanOptionHandler.class)
     private Boolean reportScore = true;
+    @Option(name = "-gcWindow", required = false)
+    private int gcWindow = 100000;
+    @Option(name = "-autoGc", required = false, handler = ExplicitBooleanOptionHandler.class)
+    private Boolean autoGc = false;
+    @Option(name = "-tmpDir", required = true, handler = FileOptionHandler.class)
+    private File tmpDir;
+//    @Option(name = "-parties" ,required = true )
+//    private Integer parties;
 
     @Option(name = "-cacheDir", required = true, handler = FileOptionHandler.class)
     private File cacheDir;
@@ -67,11 +76,16 @@ public class ParallelTrainer {
     private List<String> labels;
     private MultiLayerNetwork net;
     private final PortListener portListener = new PortListener();
+    private final Evaluator evaluator;
+    private static final String DURATION_FORMAT = "HHHH 'hrs' mm 'mins' ss 'sec'";
 
 
     public ParallelTrainer(String[] args) throws IOException {
-        portListener.start();
         parseCmdLineArgs(this, args);
+        portListener.start();
+        evaluator = new Evaluator(tmpDir, epochs);
+        Nd4j.getMemoryManager().togglePeriodicGc(autoGc);
+        Nd4j.getMemoryManager().setAutoGcWindow(gcWindow);
         labels = Files.readLines(labelsFile, Charsets.UTF_8);
         trainData = createCachingDataSetIterator(trainDir);
         testData = createCachingDataSetIterator(testDir);
@@ -90,11 +104,11 @@ public class ParallelTrainer {
 
     private DataSetIterator createCachingDataSetIterator(File dir) {
         FileDataSetIterator dataSetIterator = new FileDataSetIterator(dir);
-        return new CachingDataSetIterator(dataSetIterator, new InFileAndMemoryDataSetCache(cacheDir));
+        return new CachingDataSetIterator(dataSetIterator, new InMemoryDataSetCache());
     }
 
 
-    public void run() {
+    public void run() throws IOException {
 
       /*  WorkspaceConfiguration workspaceConfig = WorkspaceConfiguration.builder()
                 .policyAllocation(AllocationPolicy.STRICT)
@@ -107,17 +121,11 @@ public class ParallelTrainer {
             Stopwatch trainTimer = Stopwatch.createStarted();
             log.info("Started training epoch {} of {}", epoch, epochs);
             parallelWrapper.fit(trainData);
-            String trainElapsed = DurationFormatUtils.formatDuration(trainTimer.elapsed(TimeUnit.MILLISECONDS), "HHH:mm:ss.SSS", false);
+            String trainElapsed = DurationFormatUtils.formatDuration(trainTimer.elapsed(TimeUnit.MILLISECONDS), DURATION_FORMAT, false);
             trainData.reset();
             log.info("Finished training epoch {} of {} in {}", epoch, epochs, trainElapsed);
-            log.info("Started testing epoch {} of {}", epoch, epochs);
-            Stopwatch testTimer = Stopwatch.createStarted();
-            EvaluationBinary evaluationBinary = net.doEvaluation(testData, new EvaluationBinary())[0];
-            String stats = evaluationBinary.stats();
-            log.info("\n{}", stats);
-            testData.reset();
-            String testElapsed = DurationFormatUtils.formatDuration(testTimer.elapsed(TimeUnit.MILLISECONDS), "HHH:mm:ss.SSS", false);
-            log.info("Finished testing epoch {} of {} in {}", epoch, epochs, testElapsed);
+            evaluator.evaluate(net, epoch, labels, testData);
+
         }
         portListener.stop();
 
@@ -133,6 +141,7 @@ public class ParallelTrainer {
                 .reportScoreAfterAveraging(reportScore)
                 .averageUpdaters(true)
                 .trainingMode(trainingMode)
+//                .gradientsAccumulator(new EncodedGradientsAccumulator(parties, 1e-3))
                 .build();
     }
 
@@ -195,7 +204,7 @@ public class ParallelTrainer {
         private Process p;
 
         private void start() throws IOException {
-            p = Runtime.getRuntime().exec("nc -l 8081");
+            p = Runtime.getRuntime().exec("nc -l -p 8081 localhost");
         }
 
 
@@ -207,13 +216,14 @@ public class ParallelTrainer {
 
     public static void main(String[] args) throws IOException {
 
+
 //        Nd4j.setDataType(DataBuffer.Type.HALF);
         CudaEnvironment.getInstance().getConfiguration()
                 // key option enabled
                 .allowMultiGPU(true)
 
                 // we're allowing larger memory caches
-                .setMaximumDeviceCache(2L * 1024L * 1024L * 1024L)
+//                .setMaximumDeviceCache(2L * 1024L * 1024L * 1024L)
 
                 // cross-device access is used for faster model averaging over pcie
                 .allowCrossDeviceAccess(true);
@@ -222,4 +232,5 @@ public class ParallelTrainer {
         new ParallelTrainer(args).run();
 
     }
+
 }
